@@ -30,14 +30,15 @@ export default async function handler(req, res) {
     const isProd = process.env.NODE_ENV === 'production';
 
     if (isProd) {
-      // PostgreSQL transaction
+      // PostgreSQL transaction with proper locking
       const client = await db.connect();
       
       try {
         await client.query('BEGIN');
         
+        // Get booking with lock
         const bookingResult = await client.query(
-          'SELECT * FROM bookings WHERE booking_reference = $1 AND user_id = $2 AND is_active = true',
+          'SELECT * FROM bookings WHERE booking_reference = $1 AND user_id = $2 AND is_active = true FOR UPDATE',
           [ref, user.id]
         );
         
@@ -48,24 +49,22 @@ export default async function handler(req, res) {
           return res.status(404).json({ error: 'Booking not found' });
         }
         
-        const seatIds = JSON.parse(booking.seat_ids);
+        const seatIds = booking.seat_ids.split(',').map(id => parseInt(id));
         
-        // Free seats
-        for (const seatId of seatIds) {
-          await client.query(
-            'UPDATE seats SET is_booked = false, booked_by = NULL, booked_at = NULL WHERE id = $1',
-            [seatId]
-          );
-        }
+        // Free seats with proper validation
+        await client.query(
+          'UPDATE seats SET is_booked = false, booked_by = NULL, booked_at = NULL WHERE id = ANY($1::int[]) AND booked_by = $2',
+          [seatIds, user.id]
+        );
         
         // Cancel booking
         await client.query(
-          'UPDATE bookings SET is_active = false WHERE id = $1',
-          [booking.id]
+          'UPDATE bookings SET is_active = false WHERE id = $1 AND user_id = $2',
+          [booking.id, user.id]
         );
         
         await client.query('COMMIT');
-        res.json({ success: true, message: 'Booking cancelled' });
+        res.json({ success: true, message: 'Booking cancelled successfully' });
       } catch (err) {
         await client.query('ROLLBACK');
         throw err;
@@ -73,10 +72,11 @@ export default async function handler(req, res) {
         client.release();
       }
     } else {
-      // SQLite transaction
+      // SQLite transaction with improved validation
       db.exec('BEGIN TRANSACTION');
       
       try {
+        // Get booking
         const booking = db.prepare(
           'SELECT * FROM bookings WHERE booking_reference = ? AND user_id = ? AND is_active = 1'
         ).get(ref, user.id);
@@ -88,22 +88,22 @@ export default async function handler(req, res) {
         
         const seatIds = JSON.parse(booking.seat_ids);
         
-        // Free seats
+        // Free seats with proper validation
         const updateSeat = db.prepare(
-          'UPDATE seats SET is_booked = 0, booked_by = NULL, booked_at = NULL WHERE id = ?'
+          'UPDATE seats SET is_booked = 0, booked_by = NULL, booked_at = NULL WHERE id = ? AND booked_by = ?'
         );
         
         seatIds.forEach(seatId => {
-          updateSeat.run(seatId);
+          updateSeat.run(seatId, user.id);
         });
         
         // Cancel booking
         db.prepare(
-          'UPDATE bookings SET is_active = 0 WHERE id = ?'
-        ).run(booking.id);
+          'UPDATE bookings SET is_active = 0 WHERE id = ? AND user_id = ?'
+        ).run(booking.id, user.id);
         
         db.exec('COMMIT');
-        res.json({ success: true, message: 'Booking cancelled' });
+        res.json({ success: true, message: 'Booking cancelled successfully' });
       } catch (err) {
         db.exec('ROLLBACK');
         throw err;

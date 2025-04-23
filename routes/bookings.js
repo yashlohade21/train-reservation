@@ -26,15 +26,20 @@ module.exports = function(app, db, authenticateToken) {
       // Start transaction
       db.exec('BEGIN TRANSACTION');
       
+      // First check total available seats
+      const totalAvailableSeats = db.prepare(
+        'SELECT COUNT(*) as count FROM seats WHERE is_booked = 0'
+      ).get().count;
+
+      if (totalAvailableSeats < numSeats) {
+        db.exec('ROLLBACK');
+        return res.status(400).json({ error: 'Not enough seats available' });
+      }
+
       // Find available seats
       const availableSeats = db.prepare(
         'SELECT id FROM seats WHERE is_booked = 0 ORDER BY row_number, position_in_row LIMIT ?'
       ).all(numSeats);
-      
-      if (availableSeats.length < numSeats) {
-        db.exec('ROLLBACK');
-        return res.status(400).json({ error: 'Not enough seats available' });
-      }
       
       const seatIds = availableSeats.map(seat => seat.id);
       const bookingRef = 'BK-' + Math.random().toString(36).substring(2, 10).toUpperCase();

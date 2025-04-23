@@ -29,20 +29,55 @@ export default async function handler(req, res) {
   try {
     authenticateToken(req);
     
-    db.exec('BEGIN TRANSACTION');
-    
-    // Reset seats
-    db.prepare(
-      'UPDATE seats SET is_booked = 0, booked_by = NULL, booked_at = NULL'
-    ).run();
-    
-    // Cancel all bookings
-    db.prepare(
-      'UPDATE bookings SET is_active = 0 WHERE is_active = 1'
-    ).run();
-    
-    db.exec('COMMIT');
-    res.json({ success: true, message: 'All bookings reset' });
+    const isProd = process.env.NODE_ENV === 'production';
+
+    if (isProd) {
+      // PostgreSQL transaction
+      const client = await db.connect();
+      
+      try {
+        await client.query('BEGIN');
+        
+        // Reset seats
+        await client.query(
+          'UPDATE seats SET is_booked = false, booked_by = NULL, booked_at = NULL'
+        );
+        
+        // Cancel all bookings
+        await client.query(
+          'UPDATE bookings SET is_active = false WHERE is_active = true'
+        );
+        
+        await client.query('COMMIT');
+        res.json({ success: true, message: 'All bookings reset' });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      // SQLite transaction
+      db.exec('BEGIN TRANSACTION');
+      
+      try {
+        // Reset seats
+        db.prepare(
+          'UPDATE seats SET is_booked = 0, booked_by = NULL, booked_at = NULL'
+        ).run();
+        
+        // Cancel all bookings
+        db.prepare(
+          'UPDATE bookings SET is_active = 0 WHERE is_active = 1'
+        ).run();
+        
+        db.exec('COMMIT');
+        res.json({ success: true, message: 'All bookings reset' });
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    }
   } catch (err) {
     if (err.message === 'No token provided') {
       return res.status(401).json({ error: 'No token provided' });
@@ -55,7 +90,6 @@ export default async function handler(req, res) {
     }
     
     console.error('Reset error:', err);
-    db.exec('ROLLBACK');
     return res.status(500).json({ error: 'Failed to reset bookings' });
   }
 }

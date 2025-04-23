@@ -102,15 +102,24 @@ export default function Dashboard() {
           router.push('/login');
           return;
         }
-        throw new Error(`Failed to fetch bookings: ${response.statusText}`);
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to fetch bookings');
       }
 
       const data = await response.json();
-      if (!Array.isArray(data)) {
-        throw new Error('Invalid bookings data received');
-      }
       
-      setBookings(data);
+      // Ensure we have an array of bookings
+      const bookingsArray = Array.isArray(data) ? data : [];
+      
+      // Process the bookings to ensure seat_ids is always an array
+      const processedBookings = bookingsArray.map(booking => ({
+        ...booking,
+        seat_details: Array.isArray(booking.seat_details) ? booking.seat_details : 
+                 typeof booking.seat_details === 'string' ? booking.seat_details.split(',').map(id => parseInt(id)) :
+                 []
+      }));
+      
+      setBookings(processedBookings);
     } catch (err) {
       console.error('Fetch bookings error:', err);
       setError('Failed to load bookings. Please try refreshing the page.');
@@ -359,7 +368,13 @@ export default function Dashboard() {
                 <li key={booking.id} className={styles.bookingItem}>
                   <div>
                     <div>Reference: {booking.booking_reference}</div>
-                    <div>Seats: {booking.seat_ids.length}</div>
+                    <div>
+                      Seats: {
+                        booking.seat_details?.length > 0 
+                          ? booking.seat_details.map(seat => seat.seat_number).join(', ')
+                          : `${booking.seat_ids?.length || 0} seats`
+                      }
+                    </div>
                     <div>Date: {new Date(booking.created_at).toLocaleString()}</div>
                   </div>
                   <button
